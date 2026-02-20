@@ -38,44 +38,70 @@ st.markdown("""
 
 st.title("📚 教师课时智能管理平台")
 
-# 初始化记忆
+# 初始化网页记忆
 if 'all_sheets' not in st.session_state:
     st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state:
     st.session_state['current_sheet'] = None
 
-# ================= 2. 侧边栏与文件上传 =================
+# ================= 2. 强力数据清洗引擎 (修复报错的核心) =================
+def clean_excel_data(df):
+    """自动寻找真正的表头，并修复空白/重复列名，防止网页崩溃"""
+    header_idx = -1
+    
+    # 1. 寻找包含 "姓名" 或 "科目" 的那一行作为真正的表头
+    for i, row in df.iterrows():
+        row_str = str(row.values)
+        if "姓名" in row_str or "科目" in row_str:
+            header_idx = i
+            break
+            
+    if header_idx != -1:
+        # 提取真实表头
+        raw_cols = df.iloc[header_idx].tolist()
+        new_cols = []
+        
+        # 2. 修复合并单元格带来的空白列和重复列名 (防止 st.data_editor 报错)
+        for idx, col in enumerate(raw_cols):
+            # 如果是空的，给个默认名字
+            col_name = str(col).strip() if pd.notna(col) and str(col).strip() != "" else f"空白列_{idx}"
+            # 如果名字重复了，加个后缀
+            while col_name in new_cols:
+                col_name += "_重复"
+            new_cols.append(col_name)
+            
+        df.columns = new_cols
+        # 删掉表头以上的没用排版行
+        df = df.iloc[header_idx + 1:].reset_index(drop=True)
+        
+    # 3. 清理掉全空的行或列
+    df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
+    
+    # 4. 强制所有列名转为字符串（Streamlit 的硬性要求）
+    df.columns = df.columns.astype(str)
+    
+    return df
+
+# ================= 3. 侧边栏与文件上传 =================
 st.sidebar.header("📁 数据中心")
 uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
 
-def clean_excel_data(df):
-    """【核心黑科技】：自动寻找真正的表头，清理合并单元格带来的 Unnamed 问题"""
-    # 如果列名里包含很多 Unnamed，说明表头被 Excel 的排版占用了
-    if any("Unnamed" in str(col) for col in df.columns):
-        # 寻找包含 "姓名" 或 "科目" 的那一行作为真正的表头
-        for index, row in df.iterrows():
-            if "姓名" in str(row.values) or "科目" in str(row.values):
-                df.columns = row
-                # 删掉表头以上的没用排版行，并重置索引
-                df = df.iloc[index + 1:].reset_index(drop=True)
-                break
-    # 清理掉全空的行或列
-    df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
-    return df
-
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
-    with st.spinner('正在读取并智能清理您的 Excel 数据...'):
-        raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
-        clean_sheets = {}
-        # 对每一个 sheet 进行自动清理
-        for sheet_name, df in raw_sheets.items():
-            clean_sheets[sheet_name] = clean_excel_data(df)
+    try:
+        with st.spinner('正在读取并智能清洗您的 Excel 数据，请稍候...'):
+            raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
+            clean_sheets = {}
             
-        st.session_state['all_sheets'] = clean_sheets
-        st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
-        st.sidebar.success("✅ 文件读取并清理成功！")
+            for sheet_name, df in raw_sheets.items():
+                clean_sheets[sheet_name] = clean_excel_data(df)
+                
+            st.session_state['all_sheets'] = clean_sheets
+            st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
+            st.sidebar.success("✅ 文件清洗并加载成功！")
+    except Exception as e:
+        st.error(f"读取 Excel 文件时发生致命错误: {e}")
 
-# ================= 3. 动态顶部导航 =================
+# ================= 4. 动态顶部导航 =================
 if st.session_state['all_sheets'] is not None:
     all_sheet_names = list(st.session_state['all_sheets'].keys())
     
@@ -110,36 +136,40 @@ if st.session_state['all_sheets'] is not None:
 
     st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
 
-    # ================= 4. 核心编辑区 =================
+    # ================= 5. 核心编辑区 =================
     current = st.session_state['current_sheet']
     st.markdown(f"#### ✏️ 当前编辑 : 【 {current} 】")
     
     df_current = st.session_state['all_sheets'][current]
     
-    # 渲染干净的数据表
-    edited_df = st.data_editor(
-        df_current, 
-        num_rows="dynamic",
-        use_container_width=True,
-        height=400
-    )
-    st.session_state['all_sheets'][current] = edited_df
+    try:
+        # 渲染干净的数据表
+        edited_df = st.data_editor(
+            df_current, 
+            num_rows="dynamic",
+            use_container_width=True,
+            height=400,
+            key=f"editor_{current}" # 增加 key 防止互相干扰
+        )
+        st.session_state['all_sheets'][current] = edited_df
+    except Exception as e:
+        st.error(f"表格渲染失败，可能是由于表头格式特殊导致。错误代码: {e}")
 
-    # ================= 5. 智能统计区 (新增核心功能) =================
+    # ================= 6. 智能统计区 =================
     st.markdown("---")
     st.markdown(f"#### 📊 【{current}】各教师课时自动统计")
     
     try:
-        # 提取相关列（这里会自动寻找你表里的对应列）
+        # 提取相关列（兼容不同的叫法）
         name_col = next((col for col in edited_df.columns if '姓名' in str(col)), None)
         type_col = next((col for col in edited_df.columns if '子类' in str(col) or '类别' in str(col)), None)
         count_col = next((col for col in edited_df.columns if '课数' in str(col) or '课时' in str(col)), None)
 
         if name_col and type_col and count_col:
-            # 将课数列强制转换为数字，防止报错
+            # 强制转换为数字（把非数字的变成 0）
             edited_df[count_col] = pd.to_numeric(edited_df[count_col], errors='coerce').fillna(0)
             
-            # 【黑科技】：生成类似 Excel 的数据透视表
+            # 生成数据透视表
             pivot_df = pd.pivot_table(
                 edited_df, 
                 values=count_col, 
@@ -149,25 +179,26 @@ if st.session_state['all_sheets'] is not None:
                 fill_value=0
             )
             
-            # 增加一行“合计”
+            # 计算每位老师的总计
             pivot_df['总计'] = pivot_df.sum(axis=1)
-            
-            # 显示精美的统计表格
             st.dataframe(pivot_df, use_container_width=True)
         else:
-            st.info("💡 当前表格缺少【姓名】、【类别】或【课数】列，无法生成透视统计。")
+            st.info("💡 当前表格必须包含【姓名】、【类别/子类】和【课数/课时】的列头，才能自动生成统计报表。")
     except Exception as e:
-        st.warning(f"统计计算时遇到一点小问题：{e}")
+        st.warning(f"由于数据格式原因，暂无法生成统计表: {e}")
 
     # ---------------- 下载最新数据 ----------------
     st.sidebar.divider()
     st.sidebar.subheader("💾 保存与下载")
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for sheet_name, df in st.session_state['all_sheets'].items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-    processed_data = output.getvalue()
-    st.sidebar.download_button("⬇️ 下载最新版 Excel", data=processed_data, file_name="最新课时统计_已清理.xlsx")
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for sheet_name, df in st.session_state['all_sheets'].items():
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+        processed_data = output.getvalue()
+        st.sidebar.download_button("⬇️ 下载最新版 Excel", data=processed_data, file_name="最新课时统计_已清理.xlsx")
+    except Exception as e:
+        st.sidebar.error("生成下载文件时出错，请检查是否有非法字符。")
 
 else:
     st.info("👆 请先在左侧上传您的 Excel 文件！")

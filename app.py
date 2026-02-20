@@ -38,47 +38,56 @@ st.markdown("""
 
 st.title("📚 教师课时智能管理平台")
 
-# 初始化网页记忆
 if 'all_sheets' not in st.session_state:
     st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state:
     st.session_state['current_sheet'] = None
 
-# ================= 2. 强力数据清洗引擎 (修复报错的核心) =================
+# ================= 2. 终极防御数据清洗引擎 =================
 def clean_excel_data(df):
-    """自动寻找真正的表头，并修复空白/重复列名，防止网页崩溃"""
+    """绝对保证所有列名唯一且不为空白/nan"""
     header_idx = -1
     
-    # 1. 寻找包含 "姓名" 或 "科目" 的那一行作为真正的表头
-    for i, row in df.iterrows():
-        row_str = str(row.values)
-        if "姓名" in row_str or "科目" in row_str:
+    # 1. 扩大搜索范围：在前 10 行里找，只要包含这些词，就认定是表头
+    for i in range(min(10, len(df))):
+        row_str = str(df.iloc[i].values)
+        if any(keyword in row_str for keyword in ["姓名", "科目", "班级", "教师", "序号", "合计", "类别"]):
             header_idx = i
             break
             
+    # 提取表头数据
     if header_idx != -1:
-        # 提取真实表头
         raw_cols = df.iloc[header_idx].tolist()
-        new_cols = []
-        
-        # 2. 修复合并单元格带来的空白列和重复列名 (防止 st.data_editor 报错)
-        for idx, col in enumerate(raw_cols):
-            # 如果是空的，给个默认名字
-            col_name = str(col).strip() if pd.notna(col) and str(col).strip() != "" else f"空白列_{idx}"
-            # 如果名字重复了，加个后缀
-            while col_name in new_cols:
-                col_name += "_重复"
-            new_cols.append(col_name)
-            
-        df.columns = new_cols
-        # 删掉表头以上的没用排版行
         df = df.iloc[header_idx + 1:].reset_index(drop=True)
+    else:
+        raw_cols = df.columns.tolist() # 找不到表头就用默认的
         
-    # 3. 清理掉全空的行或列
-    df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
+    # 2. 核心大招：强制重命名与去重
+    new_cols = []
+    for idx, col in enumerate(raw_cols):
+        # 将各种形式的“空”变成“空白列”
+        col_str = str(col).strip()
+        if pd.isna(col) or col_str.lower() in ['nan', 'none', 'nat', '', 'unnamed']:
+            col_name = f"未命名列_{idx+1}"
+        elif "Unnamed" in col_str:
+            col_name = f"未命名列_{idx+1}"
+        else:
+            col_name = col_str
+            
+        # 绝对去重机制：如果有重复，就加上 _重复1, _重复2
+        base_name = col_name
+        counter = 1
+        while col_name in new_cols:
+            col_name = f"{base_name}_重复{counter}"
+            counter += 1
+            
+        new_cols.append(col_name)
+        
+    # 赋值新列名
+    df.columns = new_cols
     
-    # 4. 强制所有列名转为字符串（Streamlit 的硬性要求）
-    df.columns = df.columns.astype(str)
+    # 3. 清理掉全是空白的行或列
+    df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
     
     return df
 
@@ -88,7 +97,7 @@ uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", typ
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
     try:
-        with st.spinner('正在读取并智能清洗您的 Excel 数据，请稍候...'):
+        with st.spinner('正在执行终极清理算法，请稍候...'):
             raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
             clean_sheets = {}
             
@@ -97,9 +106,9 @@ if uploaded_file is not None and st.session_state['all_sheets'] is None:
                 
             st.session_state['all_sheets'] = clean_sheets
             st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
-            st.sidebar.success("✅ 文件清洗并加载成功！")
+            st.sidebar.success("✅ 文件清洗并加载成功，没有产生任何崩溃！")
     except Exception as e:
-        st.error(f"读取 Excel 文件时发生致命错误: {e}")
+        st.error(f"严重错误: {e}")
 
 # ================= 4. 动态顶部导航 =================
 if st.session_state['all_sheets'] is not None:
@@ -149,27 +158,24 @@ if st.session_state['all_sheets'] is not None:
             num_rows="dynamic",
             use_container_width=True,
             height=400,
-            key=f"editor_{current}" # 增加 key 防止互相干扰
+            key=f"editor_{current}"
         )
         st.session_state['all_sheets'][current] = edited_df
     except Exception as e:
-        st.error(f"表格渲染失败，可能是由于表头格式特殊导致。错误代码: {e}")
+        st.error(f"渲染失败。错误详情: {e}")
 
     # ================= 6. 智能统计区 =================
     st.markdown("---")
     st.markdown(f"#### 📊 【{current}】各教师课时自动统计")
     
     try:
-        # 提取相关列（兼容不同的叫法）
-        name_col = next((col for col in edited_df.columns if '姓名' in str(col)), None)
+        name_col = next((col for col in edited_df.columns if '姓名' in str(col) or '教师' in str(col)), None)
         type_col = next((col for col in edited_df.columns if '子类' in str(col) or '类别' in str(col)), None)
         count_col = next((col for col in edited_df.columns if '课数' in str(col) or '课时' in str(col)), None)
 
         if name_col and type_col and count_col:
-            # 强制转换为数字（把非数字的变成 0）
             edited_df[count_col] = pd.to_numeric(edited_df[count_col], errors='coerce').fillna(0)
             
-            # 生成数据透视表
             pivot_df = pd.pivot_table(
                 edited_df, 
                 values=count_col, 
@@ -179,13 +185,12 @@ if st.session_state['all_sheets'] is not None:
                 fill_value=0
             )
             
-            # 计算每位老师的总计
             pivot_df['总计'] = pivot_df.sum(axis=1)
             st.dataframe(pivot_df, use_container_width=True)
         else:
-            st.info("💡 当前表格必须包含【姓名】、【类别/子类】和【课数/课时】的列头，才能自动生成统计报表。")
+            st.info("💡 只有同时包含【姓名/教师】、【类别/子类】和【课数/课时】列的表格，才能在此处生成统计哦。")
     except Exception as e:
-        st.warning(f"由于数据格式原因，暂无法生成统计表: {e}")
+        pass
 
     # ---------------- 下载最新数据 ----------------
     st.sidebar.divider()

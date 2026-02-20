@@ -45,13 +45,13 @@ if 'current_sheet' not in st.session_state:
 
 # ================= 2. 终极防御数据清洗引擎 =================
 def clean_excel_data(df):
-    """绝对保证所有列名唯一且不为空白/nan"""
+    """绝对保证所有列名唯一且不为空白/nan，完美解决多组同名列崩溃问题"""
     header_idx = -1
     
-    # 1. 扩大搜索范围：在前 10 行里找，只要包含这些词，就认定是表头
+    # 1. 寻找真实表头：只要包含这些核心词，就认为是表头
     for i in range(min(10, len(df))):
         row_str = str(df.iloc[i].values)
-        if any(keyword in row_str for keyword in ["姓名", "科目", "班级", "教师", "序号", "合计", "类别"]):
+        if any(keyword in row_str for keyword in ["姓名", "科目", "班级", "教师", "序号", "早自", "类别"]):
             header_idx = i
             break
             
@@ -60,33 +60,34 @@ def clean_excel_data(df):
         raw_cols = df.iloc[header_idx].tolist()
         df = df.iloc[header_idx + 1:].reset_index(drop=True)
     else:
-        raw_cols = df.columns.tolist() # 找不到表头就用默认的
+        raw_cols = df.columns.tolist() 
         
-    # 2. 核心大招：强制重命名与去重
+    # 2. 核心大招：强制去重与空值替换
     new_cols = []
     for idx, col in enumerate(raw_cols):
-        # 将各种形式的“空”变成“空白列”
         col_str = str(col).strip()
+        
+        # 处理各种空名字
         if pd.isna(col) or col_str.lower() in ['nan', 'none', 'nat', '', 'unnamed']:
-            col_name = f"未命名列_{idx+1}"
-        elif "Unnamed" in col_str:
-            col_name = f"未命名列_{idx+1}"
+            base_name = f"未命名_{idx+1}"
+        elif "unnamed" in col_str.lower():
+            base_name = f"未命名_{idx+1}"
         else:
-            col_name = col_str
+            base_name = col_str
             
-        # 绝对去重机制：如果有重复，就加上 _重复1, _重复2
-        base_name = col_name
+        # 绝对去重机制：遇到一样的名字，自动加 _1, _2 后缀
+        final_name = base_name
         counter = 1
-        while col_name in new_cols:
-            col_name = f"{base_name}_重复{counter}"
+        while final_name in new_cols:
+            final_name = f"{base_name}_{counter}"
             counter += 1
             
-        new_cols.append(col_name)
+        new_cols.append(final_name)
         
-    # 赋值新列名
+    # 赋值安全的新列名
     df.columns = new_cols
     
-    # 3. 清理掉全是空白的行或列
+    # 3. 清理掉全是空白的废行或废列
     df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
     
     return df
@@ -97,7 +98,7 @@ uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", typ
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
     try:
-        with st.spinner('正在执行终极清理算法，请稍候...'):
+        with st.spinner('正在执行终极防崩溃算法解析，请稍候...'):
             raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
             clean_sheets = {}
             
@@ -106,7 +107,7 @@ if uploaded_file is not None and st.session_state['all_sheets'] is None:
                 
             st.session_state['all_sheets'] = clean_sheets
             st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
-            st.sidebar.success("✅ 文件清洗并加载成功，没有产生任何崩溃！")
+            st.sidebar.success("✅ 文件清洗并加载成功！重复列名已自动添加后缀区分。")
     except Exception as e:
         st.error(f"严重错误: {e}")
 

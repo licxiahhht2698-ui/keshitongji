@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import io
 import re
-from openpyxl.styles import Font, Alignment
+# 新增：强大的 Excel 样式控制库
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ================= 1. 网页基础设置 =================
 st.set_page_config(page_title="教师课时管理系统", page_icon="📚", layout="wide")
@@ -32,24 +34,60 @@ if 'all_sheets' not in st.session_state: st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state: st.session_state['current_sheet'] = None
 if 'global_mode' not in st.session_state: st.session_state['global_mode'] = False
 
-# ================= 新增：带大表头的 Excel 导出引擎 =================
-def convert_df_to_excel(df, sheet_name, title):
-    """生成带有大字号合并表头的正式 Excel 报表"""
+# ================= 新增核心：汇报级 Excel 渲染引擎 =================
+def convert_df_to_excel_pro(df, sheet_name, title):
+    """将数据转化为带专业边框、颜色、自适应列宽的领导汇报级表格"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 从第3行开始写数据，把前2行留给大表头
-        df.to_excel(writer, sheet_name=sheet_name, startrow=2)
+        # 重置索引，让“教师姓名”变成普通列，方便一起加样式
+        export_df = df.reset_index()
+        # 从第3行开始写数据（索引不要了，因为已经重置出来了）
+        export_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False)
         worksheet = writer.sheets[sheet_name]
         
-        # 写入大标题
+        # --- 准备样式 ---
+        # 细实线边框
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                             top=Side(style='thin'), bottom=Side(style='thin'))
+        # 商务蓝表头底色
+        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        center_align = Alignment(horizontal='center', vertical='center')
+        
+        max_col = len(export_df.columns)
+        max_row = len(export_df) + 3 # 2行标题 + 1行表头 + 数据
+        
+        # --- 1. 渲染大标题 ---
         cell = worksheet.cell(row=1, column=1, value=title)
-        cell.font = Font(size=16, bold=True, color="000000")
-        
-        # 合并单元格让标题居中
-        max_col = len(df.columns) + 1 
+        cell.font = Font(size=18, bold=True, color="000000")
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.alignment = center_align
+        worksheet.row_dimensions[1].height = 40 # 标题行加高
         
+        # --- 2. 渲染表头 (第3行) ---
+        worksheet.row_dimensions[3].height = 25
+        for col_idx in range(1, max_col + 1):
+            c = worksheet.cell(row=3, column=col_idx)
+            c.fill = header_fill
+            c.font = header_font
+            c.alignment = center_align
+            c.border = thin_border
+            
+        # --- 3. 渲染数据区和调整列宽 ---
+        for r_idx in range(4, max_row + 1):
+            worksheet.row_dimensions[r_idx].height = 20 # 舒适的数据行高
+            for c_idx in range(1, max_col + 1):
+                c = worksheet.cell(row=r_idx, column=c_idx)
+                c.alignment = center_align
+                c.border = thin_border
+                # 给第一列（教师姓名）加粗
+                if c_idx == 1:
+                    c.font = Font(bold=True)
+                    
+        # --- 4. 智能调整列宽 ---
+        for i in range(1, max_col + 1):
+            worksheet.column_dimensions[get_column_letter(i)].width = 14 # 统一加宽，防止拥挤
+
     return output.getvalue()
 
 # ================= 2. 智能识别与清洗引擎 =================
@@ -64,13 +102,10 @@ def clean_excel_data(df):
         new_cols = []
         for idx, col in enumerate(df.columns):
             c = str(col).strip()
-            if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower():
-                c = f"未命名_{idx+1}"
+            if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower(): c = f"未命名_{idx+1}"
             base = c
             counter = 1
-            while c in new_cols:
-                c = f"{base}_{counter}"
-                counter += 1
+            while c in new_cols: c = f"{base}_{counter}"; counter += 1
             new_cols.append(c)
         df.columns = new_cols
         return df.dropna(how='all', axis=1).dropna(how='all', axis=0)
@@ -87,13 +122,10 @@ def clean_excel_data(df):
             new_cols = []
             for idx, col in enumerate(raw_cols):
                 c = str(col).strip()
-                if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower():
-                    c = f"未命名_{idx+1}"
+                if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower(): c = f"未命名_{idx+1}"
                 base = c
                 counter = 1
-                while c in new_cols:
-                    c = f"{base}_{counter}"
-                    counter += 1
+                while c in new_cols: c = f"{base}_{counter}"; counter += 1
                 new_cols.append(c)
             df.columns = new_cols
         return df.dropna(how='all', axis=1).dropna(how='all', axis=0)
@@ -131,34 +163,51 @@ if uploaded_file is not None and st.session_state['all_sheets'] is None:
         with st.spinner('正在执行双引擎解析，请稍候...'):
             raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
             clean_sheets = {}
-            for sheet_name, df in raw_sheets.items():
-                clean_sheets[sheet_name] = clean_excel_data(df)
+            for sheet_name, df in raw_sheets.items(): clean_sheets[sheet_name] = clean_excel_data(df)
             st.session_state['all_sheets'] = clean_sheets
             st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
             st.sidebar.success("✅ 文件解析成功！")
     except Exception as e:
         st.error(f"严重错误: {e}")
 
-# 【新增核心功能】：侧边栏全校一键汇总
+# 【新增核心功能】：侧边栏全向导式多选汇总
 if st.session_state['all_sheets'] is not None:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🌐 全校整体统计设置")
-    st.sidebar.info("统一划定所有班级的排课列与时间段，一键生成全校总表。")
+    st.sidebar.subheader("🌐 全局统计生成器")
     
+    # 获取真正的排课班级名单（过滤掉没用的总表）
+    valid_classes = [s for s in st.session_state['all_sheets'].keys() if not any(kw in s for kw in ['总表', '分表', '汇总'])]
+    
+    scope = st.sidebar.radio("📌 统计范围选择", ["所有班级 (全校)", "按年级多选", "自定义勾选班级"])
+    
+    target_classes = []
+    if scope == "所有班级 (全校)":
+        target_classes = valid_classes
+    elif scope == "按年级多选":
+        grades = st.sidebar.multiselect("挑选年级", ["高一", "高二", "高三", "一对一"], default=["高三"])
+        target_classes = [c for c in valid_classes if any(g in c for g in grades)]
+    else:
+        target_classes = st.sidebar.multiselect("勾选具体的班级", valid_classes, default=valid_classes[:2])
+
+    st.sidebar.markdown("##### 📍 数据截取设置")
     col_g1, col_g2 = st.sidebar.columns(2)
-    with col_g1: g_start_idx = st.number_input("起始列数字", min_value=1, value=15, help="第15列即 未命名_15")
-    with col_g2: g_end_idx = st.number_input("结束列数字", min_value=1, value=21, help="第21列即 未命名_21")
+    with col_g1: g_start_idx = st.number_input("起始列数字", min_value=1, value=15)
+    with col_g2: g_end_idx = st.number_input("结束列数字", min_value=1, value=21)
     
-    g_dates = st.sidebar.date_input("全校统计时间段", [])
+    g_dates = st.sidebar.date_input("🗓️ 限定统计时间段", [])
     
-    if st.sidebar.button("🚀 一键生成全校总表", use_container_width=True, type="primary"):
+    if st.sidebar.button("🚀 一键生成全局报表", use_container_width=True, type="primary"):
         if len(g_dates) < 1:
             st.sidebar.error("请先选择完整的时间段！")
+        elif not target_classes:
+            st.sidebar.error("当前没有选定任何班级！")
         else:
             st.session_state['global_mode'] = True
             st.session_state['g_start'] = g_start_idx
             st.session_state['g_end'] = g_end_idx
             st.session_state['g_dates'] = g_dates
+            st.session_state['g_targets'] = target_classes
+            st.session_state['g_scope'] = scope
 
 # ================= 4. 动态顶部导航 =================
 if st.session_state['all_sheets'] is not None:
@@ -186,34 +235,32 @@ if st.session_state['all_sheets'] is not None:
             with cols[i+1]:
                 if st.button(btn_name, key=f"nav_{btn_name}"):
                     st.session_state['current_sheet'] = btn_name
-                    # 点击任何单一班级，都会退出全校总表模式
                     st.session_state['global_mode'] = False 
     st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
 
-    # ================= 5. 分支判断：显示全校总表 还是 单个班级表 =================
+    # ================= 5. 分支判断：全局表 or 单班级表 =================
     if st.session_state['global_mode']:
-        # ---------------- 全局统计视图 ----------------
         g_dates = st.session_state['g_dates']
         f_start = g_dates[0]
         f_end = g_dates[1] if len(g_dates) == 2 else g_dates[0]
+        targets = st.session_state['g_targets']
         
-        st.markdown(f"### 🌐 全校教师课时总汇 📅 【{f_start} 至 {f_end}】")
-        st.info(f"系统正在扫描所有班级表格的第 {st.session_state['g_start']} 列 到 第 {st.session_state['g_end']} 列...")
+        # 智能动态标题
+        report_title_prefix = "全校" if st.session_state['g_scope'] == "所有班级 (全校)" else "选中班级"
+        
+        st.markdown(f"### 🌐 【{report_title_prefix}】课时总汇 📅 ({f_start} 至 {f_end})")
+        st.info(f"正在扫描以下 {len(targets)} 个班级：{', '.join(targets[:5])}{' ...' if len(targets)>5 else ''}")
         
         all_records = []
-        # 要跳过的汇总表（防止数据重复统计）
-        skip_words = ['总表', '分表', '汇总'] 
-        
-        for s_name, s_df in st.session_state['all_sheets'].items():
-            if any(kw in s_name for kw in skip_words): continue
+        for s_name in targets:
+            if s_name not in st.session_state['all_sheets']: continue
+            s_df = st.session_state['all_sheets'][s_name]
             
-            # 安全切片：把输入的数字列转成代码索引 (比如15列是索引14)
             start_i = max(0, st.session_state['g_start'] - 1)
             end_i = min(len(s_df.columns), st.session_state['g_end'])
             if start_i >= end_i: continue
                 
             locked_cols = s_df.columns[start_i:end_i]
-            
             for col in locked_cols:
                 current_date = None
                 for val in s_df[col]:
@@ -233,28 +280,25 @@ if st.session_state['all_sheets'] is not None:
                             
         if all_records:
             stat_df = pd.DataFrame(all_records)
-            # 全校透视：算出每个老师所有科目的总计
             pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
             pivot_df['总计'] = pivot_df.sum(axis=1)
             
-            st.success(f"🎉 扫描完毕！全校共有 {len(stat_df['教师姓名'].unique())} 位老师在此期间上了课，总计 {stat_df['课时数'].sum()} 节。")
+            st.success(f"🎉 统计完毕！共 {len(stat_df['教师姓名'].unique())} 位老师上了课，总计 {stat_df['课时数'].sum()} 节。")
             st.dataframe(pivot_df, use_container_width=True)
             
-            title = f"【全校汇总】课时统计报表 ({f_start} 至 {f_end})"
-            excel_data = convert_df_to_excel(pivot_df, sheet_name="全校总计", title=title)
+            formal_title = f"【{report_title_prefix}汇总】课时报表 ({f_start}至{f_end})"
+            excel_data = convert_df_to_excel_pro(pivot_df, sheet_name="数据汇总", title=formal_title)
             st.download_button(
-                label="⬇️ 导出《全校课时总表》为 Excel",
-                data=excel_data,
-                file_name=f"全校课时总表_{f_start}至{f_end}.xlsx",
+                label=f"⬇️ 导出《{report_title_prefix}汇报表格》为 Excel",
+                data=excel_data, file_name=f"{report_title_prefix}课时报表_{f_start}至{f_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            with st.expander("🔍 查看全校抓取底层明细 (用于排错)"):
-                st.dataframe(stat_df)
+            with st.expander("🔍 查看抓取底层明细 (用于排错)"): st.dataframe(stat_df)
         else:
-            st.warning("⚠️ 在指定的日期和列范围内，全校表格中均未抓取到有效课时数据，请检查侧边栏设置！")
+            st.warning("⚠️ 在指定的范围中，未抓取到有效课时！")
             
     else:
-        # ---------------- 单一班级视图 (你原来用的界面) ----------------
+        # ---------------- 单一班级视图 ----------------
         current = st.session_state['current_sheet']
         st.markdown(f"#### 👁️ 当前查看 : 【 {current} 】")
         
@@ -268,37 +312,29 @@ if st.session_state['all_sheets'] is not None:
         with tab1:
             all_cols = display_df.columns.tolist()
             col_a, col_b = st.columns(2)
-            with col_a:
-                default_start = 14 if len(all_cols) > 14 else 0
-                start_choice = st.selectbox("🚩 起始列 (星期一)", options=all_cols, index=default_start)
-            with col_b:
-                default_end = 20 if len(all_cols) > 20 else len(all_cols) - 1
-                end_choice = st.selectbox("🏁 结束列 (星期日)", options=all_cols, index=default_end)
+            with col_a: start_choice = st.selectbox("🚩 起始列", options=all_cols, index=14 if len(all_cols)>14 else 0)
+            with col_b: end_choice = st.selectbox("🏁 结束列", options=all_cols, index=20 if len(all_cols)>20 else len(all_cols)-1)
                 
             start_idx, end_idx = all_cols.index(start_choice), all_cols.index(end_choice)
-            
-            if start_idx > end_idx:
-                st.error("⚠️ 起始列不能在结束列的后面！")
-            else:
+            if start_idx <= end_idx:
                 locked_cols = all_cols[start_idx : end_idx + 1]
                 all_dates_in_range = set()
                 for col in locked_cols:
                     for val in display_df[col]:
-                        val_str = str(val).strip()
-                        m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val_str)
+                        m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', str(val).strip())
                         if m:
                             try: all_dates_in_range.add(pd.to_datetime(m.group(1)).date())
                             except: pass
                 
                 if all_dates_in_range:
                     min_d, max_d = min(all_dates_in_range), max(all_dates_in_range)
-                    date_range = st.date_input(f"🗓️ 该班级区域共扫描到 {len(all_dates_in_range)} 天的数据，请划定提取区间：", [min_d, max_d])
+                    date_range = st.date_input(f"🗓️ 选择提取区间：", [min_d, max_d])
                     
                     if len(date_range) >= 1:
-                        filter_start = date_range[0]
-                        filter_end = date_range[1] if len(date_range) == 2 else date_range[0]
+                        f_start = date_range[0]
+                        f_end = date_range[1] if len(date_range) == 2 else date_range[0]
                         
-                        if st.button("🚀 开始本班垂直扫描提取", type="primary"):
+                        if st.button("🚀 开始本班扫描提取", type="primary"):
                             records = []
                             for col in locked_cols:
                                 current_date = None
@@ -310,12 +346,9 @@ if st.session_state['all_sheets'] is not None:
                                         except: pass
                                         continue
                                     
-                                    if current_date and (filter_start <= current_date <= filter_end):
+                                    if current_date and (f_start <= current_date <= f_end):
                                         parsed = parse_class_string(val_str)
-                                        if parsed:
-                                            parsed['来源日期'] = str(current_date)
-                                            parsed['原始录入'] = val_str
-                                            records.append(parsed)
+                                        if parsed: records.append(parsed)
                                             
                             if records:
                                 stat_df = pd.DataFrame(records)
@@ -325,19 +358,15 @@ if st.session_state['all_sheets'] is not None:
                                 st.success(f"🎉 统计完毕！【{current}】共计 {stat_df['课时数'].sum()} 节课时。")
                                 st.dataframe(pivot_df, use_container_width=True)
                                 
-                                # 【核心功能：大表头导出】
-                                formal_title = f"【{current}】课时统计报表 ({filter_start} 至 {filter_end})"
-                                excel_data = convert_df_to_excel(pivot_df, sheet_name=current, title=formal_title)
-                                
+                                # 【全新高大上排版导出】
+                                formal_title = f"【{current}】课时统计报表 ({f_start}至{f_end})"
+                                excel_data = convert_df_to_excel_pro(pivot_df, sheet_name=current, title=formal_title)
                                 st.download_button(
-                                    label=f"⬇️ 导出带表头的《{current}报表》为 Excel",
-                                    data=excel_data,
-                                    file_name=f"{current}_课时统计_{filter_start}至{filter_end}.xlsx",
+                                    label=f"⬇️ 导出带商务排版的《{current}报表》为 Excel",
+                                    data=excel_data, file_name=f"{current}_课时报表_{f_start}至{f_end}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
-                                
-                                with st.expander("🔍 点这里查看提取明细账单"):
-                                    st.dataframe(stat_df)
+                                with st.expander("🔍 提取明细"): st.dataframe(stat_df)
                             else:
                                 st.warning("未找到可识别的课时。")
                 else:
@@ -345,15 +374,15 @@ if st.session_state['all_sheets'] is not None:
 
         with tab2:
             available_cols = list(display_df.columns)
-            def guess_index(keywords):
+            def guess_index(kw):
                 for i, c in enumerate(available_cols):
-                    if any(k in str(c) for k in keywords): return i
+                    if any(k in str(c) for k in kw): return i
                 return 0
                 
             col1, col2, col3 = st.columns(3)
-            with col1: name_col = st.selectbox("👤 【教师姓名】列", available_cols, index=guess_index(['姓名', '教师', '未命名_2']))
-            with col2: type_col = st.selectbox("🏷️ 【类别】列", available_cols, index=guess_index(['子类', '类别', '科目', '未命名_4']))
-            with col3: count_col = st.selectbox("🔢 【数量】列", available_cols, index=guess_index(['课数', '课时', '节数', '未命名_7']))
+            with col1: name_col = st.selectbox("👤 【姓名】列", available_cols, index=guess_index(['姓名','教师']))
+            with col2: type_col = st.selectbox("🏷️ 【类别】列", available_cols, index=guess_index(['子类','类别']))
+            with col3: count_col = st.selectbox("🔢 【数量】列", available_cols, index=guess_index(['课数','课时']))
                 
             if st.button("📊 生成常规统计"):
                 try:
@@ -363,17 +392,15 @@ if st.session_state['all_sheets'] is not None:
                     stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '']
                     pivot_df = pd.pivot_table(stat_df, values=count_col, index=name_col, columns=type_col, aggfunc='sum', fill_value=0)
                     pivot_df['总计'] = pivot_df.sum(axis=1)
-                    
                     st.dataframe(pivot_df, use_container_width=True)
+                    
                     formal_title = f"【{current}】常规课时统计"
-                    excel_data = convert_df_to_excel(pivot_df, sheet_name=current, title=formal_title)
+                    excel_data = convert_df_to_excel_pro(pivot_df, sheet_name=current, title=formal_title)
                     st.download_button(
-                        label="⬇️ 导出当前常规报表",
-                        data=excel_data,
-                        file_name=f"{current}_常规课时.xlsx",
+                        label="⬇️ 导出带商务排版的报表", data=excel_data, file_name=f"{current}_常规课时.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 except:
-                    st.warning("无法生成，请确认选对了列名哦！")
+                    st.warning("无法生成，请确认选对了列名！")
 else:
     st.info("👆 请先在左侧上传您的 Excel 文件！")

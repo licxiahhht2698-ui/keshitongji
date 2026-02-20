@@ -18,6 +18,15 @@ st.markdown("""
     div.stButton > button:hover { background-color: #c6e0b4; color: black; border-color: #548235; }
     .row-title { font-size: 13px; font-weight: bold; color: #385723; text-align: left; padding-top: 5px; white-space: nowrap; }
     [data-testid="column"] { padding: 0 4px !important; }
+    /* 专门给下载按钮加个亮眼的颜色 */
+    div[data-testid="stDownloadButton"] > button {
+        background-color: #ffe699 !important;
+        border-color: #ffc000 !important;
+        font-weight: bold;
+    }
+    div[data-testid="stDownloadButton"] > button:hover {
+        background-color: #ffd966 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -26,12 +35,20 @@ st.title("📚 教师排课智能读取与精准统计系统")
 if 'all_sheets' not in st.session_state: st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state: st.session_state['current_sheet'] = None
 
+# ================= 新增：Excel 导出辅助函数 =================
+def convert_df_to_excel(df, sheet_name="统计报表"):
+    """把算好的统计表转换成内存中的 Excel 文件"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name=sheet_name)
+    return output.getvalue()
+
 # ================= 2. 智能识别与清洗引擎 =================
 def clean_excel_data(df):
     is_schedule = False
     for i in range(min(5, len(df))):
         row_str = " ".join(str(x) for x in df.iloc[i].values)
-        if "星期" in row_str or re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', row_str):
+        if "星期" in row_str or re.search(r'\d{4}[-/]\d{2}[-/]\d{2}', row_str):
             is_schedule = True; break
             
     if is_schedule:
@@ -129,10 +146,7 @@ if st.session_state['all_sheets'] is not None:
 
     # ================= 6. 核心统计算法库 =================
     def parse_class_string(val_str):
-        """精准提取算法：去除所有空格，剥离周数，精准拆分"""
         val_str = str(val_str).replace(" ", "") 
-        
-        # 排除无用词汇，包括“第一周”这种层级标签
         ignore = ['0', '0.0', 'nan', 'none', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日', '体育', '班会', '国学', '美术', '音乐', '大扫除']
         if not val_str or val_str.lower() in ignore or re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', val_str) or re.search(r'^第[一二三四五六七八九十]+周', val_str):
             return None
@@ -165,8 +179,6 @@ if st.session_state['all_sheets'] is not None:
         st.info("💡 系统专为垂直多周连排的周课表设计：锁定星期一到星期日的列段后，自由选择需要统计的日期区间。")
         all_cols = display_df.columns.tolist()
 
-        # 1. 结构锁定
-        st.markdown("##### 第一步：锁定列区域 (建议选择：未命名_15 到 未命名_21)")
         col_a, col_b = st.columns(2)
         with col_a:
             default_start = 14 if len(all_cols) > 14 else 0
@@ -182,7 +194,6 @@ if st.session_state['all_sheets'] is not None:
         else:
             locked_cols = all_cols[start_idx : end_idx + 1]
             
-            # 【黑科技核心】：垂直扫描提取所有日期
             all_dates_in_range = set()
             for col in locked_cols:
                 for val in display_df[col]:
@@ -193,11 +204,8 @@ if st.session_state['all_sheets'] is not None:
                             all_dates_in_range.add(pd.to_datetime(m.group(1)).date())
                         except: pass
             
-            # 2. 自由日历筛选
             if all_dates_in_range:
-                st.markdown("##### 第二步：选择统计时间")
                 min_d, max_d = min(all_dates_in_range), max(all_dates_in_range)
-                
                 date_range = st.date_input(f"🗓️ 该区域共扫描到 {len(all_dates_in_range)} 天的数据，请划定提取区间：", [min_d, max_d])
                 
                 if len(date_range) >= 1:
@@ -206,23 +214,16 @@ if st.session_state['all_sheets'] is not None:
                     
                     if st.button("🚀 开始垂直扫描提取", type="primary"):
                         records = []
-                        
-                        # 逐列往下扫描
                         for col in locked_cols:
-                            current_date = None # 当前扫描到的日期状态
-                            
+                            current_date = None
                             for val in display_df[col]:
                                 val_str = str(val).strip()
-                                
-                                # 遇到日期，更新状态灯
                                 m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val_str)
                                 if m:
-                                    try:
-                                        current_date = pd.to_datetime(m.group(1)).date()
+                                    try: current_date = pd.to_datetime(m.group(1)).date()
                                     except: pass
-                                    continue # 已经是日期了，不用往下解析课时
+                                    continue
                                 
-                                # 核心：如果当前日期在筛选范围内，且不是空行，就抓取！
                                 if current_date and (filter_start <= current_date <= filter_end):
                                     parsed = parse_class_string(val_str)
                                     if parsed:
@@ -237,7 +238,18 @@ if st.session_state['all_sheets'] is not None:
                             pivot_df['总计'] = pivot_df.sum(axis=1)
                             
                             st.success(f"🎉 统计完毕！共计提取到 {stat_df['课时数'].sum()} 节课时。")
+                            
+                            # 展示统计表
                             st.dataframe(pivot_df, use_container_width=True)
+                            
+                            # ================= 【新增】：导出周课表统计结果 =================
+                            excel_data = convert_df_to_excel(pivot_df, sheet_name=f"{current}统计")
+                            st.download_button(
+                                label="⬇️ 导出当前统计报表为 Excel 文件",
+                                data=excel_data,
+                                file_name=f"{current}_课时统计_{filter_start}至{filter_end}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
                             
                             with st.expander("🔍 点这里查看提取明细账单 (核对查错专用)"):
                                 st.dataframe(stat_df)
@@ -267,7 +279,18 @@ if st.session_state['all_sheets'] is not None:
                 stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '']
                 pivot_df = pd.pivot_table(stat_df, values=count_col, index=name_col, columns=type_col, aggfunc='sum', fill_value=0)
                 pivot_df['总计'] = pivot_df.sum(axis=1)
+                
+                # 展示统计表
                 st.dataframe(pivot_df, use_container_width=True)
+                
+                # ================= 【新增】：导出常规统计结果 =================
+                excel_data = convert_df_to_excel(pivot_df, sheet_name=f"{current}统计")
+                st.download_button(
+                    label="⬇️ 导出当前统计报表为 Excel 文件",
+                    data=excel_data,
+                    file_name=f"{current}_常规课时统计.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             except:
                 st.warning("无法生成，请确认选对了列名哦！")
 

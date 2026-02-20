@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 import re
 
 # ================= 1. 网页基础设置 =================
@@ -36,68 +37,85 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 教师排课表智能读取与统计系统")
+st.title("📚 教师排课智能读取与统计系统")
 
 if 'all_sheets' not in st.session_state:
     st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state:
     st.session_state['current_sheet'] = None
 
-# ================= 2. 数据清洗引擎 =================
+# ================= 2. 智能识别与清洗引擎 =================
 def clean_excel_data(df):
-    header_idx = -1
-    for i in range(min(10, len(df))):
-        row_str = str(df.iloc[i].values)
-        if any(keyword in row_str for keyword in ["姓名", "科目", "班级", "教师", "序号", "早自", "类别", "课数"]):
-            header_idx = i
+    # 步骤A：判断这张表是“横向排课表”还是“常规清单表”
+    is_schedule = False
+    for i in range(min(5, len(df))):
+        row_str = " ".join(str(x) for x in df.iloc[i].values)
+        # 如果前5行里包含“星期X”或者“YYYY-MM-DD”格式的日期，它就是排课表！
+        if "星期" in row_str or re.search(r'\d{4}-\d{2}-\d{2}', row_str):
+            is_schedule = True
             break
             
-    if header_idx != -1:
-        raw_cols = df.iloc[header_idx].tolist()
-        df = df.iloc[header_idx + 1:].reset_index(drop=True)
+    if is_schedule:
+        # 【排课表模式】：绝对不删行！只给无名列加上“未命名_XX”的唯一名字防止崩溃
+        new_cols = []
+        for idx, col in enumerate(df.columns):
+            c = str(col).strip()
+            if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower():
+                c = f"未命名_{idx+1}"
+            base = c
+            counter = 1
+            while c in new_cols:
+                c = f"{base}_{counter}"
+                counter += 1
+            new_cols.append(c)
+        df.columns = new_cols
+        return df.dropna(how='all', axis=1).dropna(how='all', axis=0)
     else:
-        raw_cols = df.columns.tolist() 
-        
-    new_cols = []
-    for idx, col in enumerate(raw_cols):
-        col_str = str(col).strip()
-        if pd.isna(col) or col_str.lower() in ['nan', 'none', 'nat', '', 'unnamed']:
-            base_name = f"未命名_{idx+1}"
-        elif "unnamed" in col_str.lower():
-            base_name = f"未命名_{idx+1}"
+        # 【常规清单表模式】：老规矩，寻找表头并删掉上方的废行
+        header_idx = -1
+        for i in range(min(10, len(df))):
+            if any(k in str(df.iloc[i].values) for k in ["姓名", "科目", "类别", "课数"]):
+                header_idx = i
+                break
+        if header_idx != -1:
+            raw_cols = df.iloc[header_idx].tolist()
+            df = df.iloc[header_idx + 1:].reset_index(drop=True)
         else:
-            base_name = col_str
+            raw_cols = df.columns.tolist() 
             
-        final_name = base_name
-        counter = 1
-        while final_name in new_cols:
-            final_name = f"{base_name}_{counter}"
-            counter += 1
-        new_cols.append(final_name)
-        
-    df.columns = new_cols
-    df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
-    return df
+        new_cols = []
+        for idx, col in enumerate(raw_cols):
+            c = str(col).strip()
+            if pd.isna(col) or c.lower() in ['nan', '', 'unnamed'] or 'unnamed' in c.lower():
+                c = f"未命名_{idx+1}"
+            base = c
+            counter = 1
+            while c in new_cols:
+                c = f"{base}_{counter}"
+                counter += 1
+            new_cols.append(c)
+        df.columns = new_cols
+        return df.dropna(how='all', axis=1).dropna(how='all', axis=0)
 
-# ================= 3. 文件上传 =================
+# ================= 3. 侧边栏与文件上传 =================
 st.sidebar.header("📁 数据中心")
-st.sidebar.info("📌 当前版本为只读模式，所有数据均从 Excel 中提取，不会修改原文件。")
+st.sidebar.info("📌 当前为只读模式，网页仅读取并统计，不会修改您的原文件。")
 uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
     try:
-        with st.spinner('正在解析并提取课表...'):
+        with st.spinner('正在执行双引擎解析，请稍候...'):
             raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
             clean_sheets = {}
             for sheet_name, df in raw_sheets.items():
                 clean_sheets[sheet_name] = clean_excel_data(df)
             st.session_state['all_sheets'] = clean_sheets
             st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
-            st.sidebar.success("✅ 文件解析成功！")
+            st.sidebar.success("✅ 文件解析成功！日期和时间格式已保留！")
     except Exception as e:
         st.error(f"严重错误: {e}")
 
-# ================= 4. 动态导航 =================
+# ================= 4. 动态顶部导航 =================
 if st.session_state['all_sheets'] is not None:
     all_sheet_names = list(st.session_state['all_sheets'].keys())
     directory_data = {
@@ -125,96 +143,105 @@ if st.session_state['all_sheets'] is not None:
                     st.session_state['current_sheet'] = btn_name
     st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
 
-    # ================= 5. 只读展示区 =================
+    # ================= 5. 只读展示区 (修复 00:00:00) =================
     current = st.session_state['current_sheet']
     st.markdown(f"#### 👁️ 当前查看 : 【 {current} 】")
     
     df_current = st.session_state['all_sheets'][current].copy()
     
-    # 【核心格式化】：把所有的 00:00:00 去掉，把 nan 变为空白
-    df_current = df_current.astype(str)
-    df_current = df_current.replace({' 00:00:00': ''}, regex=True)
-    df_current = df_current.replace({'nan': ''})
+    # 彻底去掉烦人的 00:00:00 和 nan，让网页上的表格干干净净！
+    display_df = df_current.astype(str)
+    display_df = display_df.replace({' 00:00:00': ''}, regex=True)
+    display_df = display_df.replace({'nan': '', 'None': ''})
     
-    # 彻底改为只读模式 st.dataframe，不再使用编辑器
-    st.dataframe(df_current, use_container_width=True, height=350)
+    st.dataframe(display_df, use_container_width=True, height=350)
 
-    # ================= 6. 带时间范围的智能统计区 =================
+    # ================= 6. 双模式统计区 =================
     st.markdown("---")
     
-    # 步骤 1：自动检测第一行里是不是包含日期 (寻找 2025-12-01 这种格式)
-    date_cols = {}
-    if len(df_current) > 0:
-        for col in df_current.columns:
-            val_str = str(df_current.loc[0, col]).strip()
-            # 如果符合 YYYY-MM-DD 格式，就记录下来它对应的列名
-            if re.match(r'^\d{4}-\d{2}-\d{2}$', val_str):
-                date_cols[val_str] = col
-
-    # 如果检测到了日期列（这就是你截图里的横向排课表）
-    if date_cols:
-        st.markdown(f"#### 📅 【{current}】日期范围课时统计")
-        st.success("✨ 系统检测到当前为排课表，已开启按日期范围自动提取统计功能！")
-        
-        dates = sorted(list(date_cols.keys()))
-        min_date = pd.to_datetime(dates[0]).date()
-        max_date = pd.to_datetime(dates[-1]).date()
-
-        # 生成日期范围选择器
-        selected_dates = st.date_input("🗓️ 请选择要统计的日期范围：", [min_date, max_date], min_value=min_date, max_value=max_date)
-
-        if len(selected_dates) == 2:
-            start_date, end_date = selected_dates
+    # 用标签页把两种统计方式分开，防止互相干扰
+    tab1, tab2 = st.tabs(["📅 横向排课表拆分与统计 (锁定时间范围)", "📊 常规清单表统计 (手动选列)"])
+    
+    # ---------------- TAB 1：排课表拆分提取逻辑 ----------------
+    with tab1:
+        # 1. 自动寻找哪些列包含了日期
+        col_to_date = {}
+        for col in display_df.columns:
+            # 在前3行里找YYYY-MM-DD格式
+            for i in range(min(3, len(display_df))):
+                val = str(display_df.iloc[i][col])
+                match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val)
+                if match:
+                    try:
+                        d = pd.to_datetime(match.group(1)).date()
+                        col_to_date[col] = d
+                        break
+                    except: pass
+                    
+        if col_to_date:
+            min_d = min(col_to_date.values())
+            max_d = max(col_to_date.values())
             
-            # 找到在所选时间范围内的真实列名 (如 未命名_15, 未命名_16)
-            valid_cols = []
-            for d_str, c_name in date_cols.items():
-                if start_date <= pd.to_datetime(d_str).date() <= end_date:
-                    valid_cols.append(c_name)
-
-            # 从第 3 行开始（跳过日期行和星期行），提取所有排课数据
-            all_classes = []
-            for col in valid_cols:
-                if len(df_current) > 2:
-                    cells = df_current[col].iloc[2:].dropna().astype(str).tolist()
-                    all_classes.extend(cells)
-
-            # 过滤垃圾词汇，并拆分姓名和课程类型
-            records = []
-            ignore_words = ['0', '0.0', '', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日', '体育', '班会', '国学', '美术', '音乐']
+            # 【核心：时间范围选择器】
+            date_range = st.date_input("🗓️ 第一步：请锁定要统计的时间范围：", [min_d, max_d], min_value=min_d, max_value=max_d)
             
-            for item in all_classes:
-                item = item.strip()
-                if not item or item in ignore_words: 
-                    continue
+            if len(date_range) == 2:
+                start_d, end_d = date_range
                 
-                # 【智能拆词】：寻找 "高一", "高二", "高三" 的位置，左边是名字，右边是班级和类型
-                idx = max(item.rfind("高一"), item.rfind("高二"), item.rfind("高三"))
-                if idx != -1:
-                    name = item[:idx]
-                    type_str = item[idx:]
-                    records.append({'教师姓名': name, '课程类别': type_str, '课时数': 1})
-                else:
-                    # 如果找不到“高”，尝试直接看最后两三个字（如 "早自"）
-                    records.append({'教师姓名': item, '课程类别': '其他课时', '课时数': 1})
+                # 根据时间范围，自动挑出对应的列（比如未命名_15, 未命名_16...）
+                target_cols = [c for c, d in col_to_date.items() if start_d <= d <= end_d]
+                
+                # 让你可以二次确认要统计的列
+                selected_cols = st.multiselect("📍 第二步：确认要提取的列（系统已根据时间自动勾选）：", options=display_df.columns.tolist(), default=target_cols)
+                
+                if st.button("🚀 开始拆分并生成统计报表", type="primary"):
+                    records = []
+                    # 要忽略的垃圾词汇
+                    ignore_words = ['0', '0.0', '', 'nan', 'none', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日', '体育', '班会', '国学', '美术', '音乐', '大扫除']
+                    
+                    for col in selected_cols:
+                        for val in display_df[col]:
+                            val_str = str(val).strip()
+                            # 过滤空值和非课程内容
+                            if not val_str or val_str.lower() in ignore_words or re.search(r'\d{4}-\d{2}-\d{2}', val_str):
+                                continue
+                                
+                            # 【核心：智能拆词算法】 (如：张淑霞高三早自 -> 张淑霞, 高三早自)
+                            # 正则表达式：找前面是汉字，紧跟着“高/初/小”的地方切开
+                            match = re.match(r'^([\u4e00-\u9fa5a-zA-Z]+?)(高[一二三]|初[一二三]|小[一二三四五六])(.*)$', val_str)
+                            if match:
+                                name = match.group(1)
+                                ctype = match.group(2) + match.group(3)
+                            else:
+                                # 如果没有"高三"，就找常用的后缀
+                                known_types = ['早自', '正大', '正小', '晚自', '自大', '自小', '辅导']
+                                name = val_str
+                                ctype = "常规课"
+                                for kt in known_types:
+                                    if val_str.endswith(kt):
+                                        name = val_str[:-len(kt)]
+                                        ctype = kt
+                                        break
+                                        
+                            records.append({'教师姓名': name, '课程类别': ctype, '课时数': 1})
+                            
+                    if records:
+                        stat_df = pd.DataFrame(records)
+                        pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
+                        pivot_df['总计'] = pivot_df.sum(axis=1)
+                        st.success(f"🎉 提取成功！已从选定日期内抓取到 {len(records)} 节课时。")
+                        st.dataframe(pivot_df, use_container_width=True)
+                    else:
+                        st.warning("⚠️ 在选定的日期列中，没有找到可以统计的教师排课数据。")
+        else:
+            st.info("💡 当前表格上方没有检测到日期格式，如果它是普通的清单，请点击右侧的【常规清单表统计】标签页。")
 
-            if records:
-                # 生成漂亮的透视统计表
-                stat_df = pd.DataFrame(records)
-                pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
-                pivot_df['总计'] = pivot_df.sum(axis=1)
-                st.dataframe(pivot_df, use_container_width=True)
-            else:
-                st.info("💡 在您选择的日期范围内，没有找到有效的教师排课记录哦。")
-
-    # 如果不是横向排课表（比如汇总表），走老规矩下拉菜单逻辑
-    else:
-        st.markdown(f"#### 📊 【{current}】常规课时自动统计")
-        available_cols = list(df_current.columns)
-        
+    # ---------------- TAB 2：常规下拉菜单统计逻辑 (备用) ----------------
+    with tab2:
+        available_cols = list(display_df.columns)
         def guess_index(keywords):
-            for i, col in enumerate(available_cols):
-                if any(k in str(col) for k in keywords): return i
+            for i, c in enumerate(available_cols):
+                if any(k in str(c) for k in keywords): return i
             return 0
             
         col1, col2, col3 = st.columns(3)
@@ -222,17 +249,17 @@ if st.session_state['all_sheets'] is not None:
         with col2: type_col = st.selectbox("🏷️ 【类别】列", available_cols, index=guess_index(['子类', '类别', '科目']))
         with col3: count_col = st.selectbox("🔢 【数量】列", available_cols, index=guess_index(['课数', '课时', '节数']))
             
-        try:
-            stat_df = df_current.copy()
-            stat_df[count_col] = pd.to_numeric(stat_df[count_col], errors='coerce').fillna(0)
-            stat_df = stat_df[stat_df[name_col].notna()]
-            stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '']
-            
-            pivot_df = pd.pivot_table(stat_df, values=count_col, index=name_col, columns=type_col, aggfunc='sum', fill_value=0)
-            pivot_df['总计'] = pivot_df.sum(axis=1)
-            st.dataframe(pivot_df, use_container_width=True)
-        except:
-            st.warning("请确保选择了正确的列。")
+        if st.button("📊 生成常规统计"):
+            try:
+                stat_df = df_current.copy()
+                stat_df[count_col] = pd.to_numeric(stat_df[count_col], errors='coerce').fillna(0)
+                stat_df = stat_df[stat_df[name_col].notna()]
+                stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '']
+                pivot_df = pd.pivot_table(stat_df, values=count_col, index=name_col, columns=type_col, aggfunc='sum', fill_value=0)
+                pivot_df['总计'] = pivot_df.sum(axis=1)
+                st.dataframe(pivot_df, use_container_width=True)
+            except:
+                st.warning("无法生成，请确认选对了列名哦！")
 
 else:
     st.info("👆 请先在左侧上传您的 Excel 文件！")

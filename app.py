@@ -31,7 +31,7 @@ def clean_excel_data(df):
     is_schedule = False
     for i in range(min(5, len(df))):
         row_str = " ".join(str(x) for x in df.iloc[i].values)
-        if "星期" in row_str or re.search(r'\d{4}[-/]\d{2}[-/]\d{2}', row_str):
+        if "星期" in row_str or re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', row_str):
             is_schedule = True; break
             
     if is_schedule:
@@ -129,129 +129,122 @@ if st.session_state['all_sheets'] is not None:
 
     # ================= 6. 核心统计算法库 =================
     def parse_class_string(val_str):
-        """最强容错提取算法：去除所有空格，提取课时倍数，精准拆分教师和课程"""
-        val_str = str(val_str).replace(" ", "") # 抹除所有导致失效的内层空格
+        """精准提取算法：去除所有空格，剥离周数，精准拆分"""
+        val_str = str(val_str).replace(" ", "") 
         
-        # 排除无用词汇
+        # 排除无用词汇，包括“第一周”这种层级标签
         ignore = ['0', '0.0', 'nan', 'none', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日', '体育', '班会', '国学', '美术', '音乐', '大扫除']
-        if not val_str or val_str.lower() in ignore or re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', val_str):
+        if not val_str or val_str.lower() in ignore or re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', val_str) or re.search(r'^第[一二三四五六七八九十]+周', val_str):
             return None
             
-        # 智能提取尾部数字（例如：早自2，代表两节课）
         count = 1.0
         m_num = re.search(r'(\d+(?:\.\d+)?)$', val_str)
         if m_num:
-            if m_num.start() == 0: return None # 全是数字则跳过
+            if m_num.start() == 0: return None
             count = float(m_num.group(1))
-            val_str = val_str[:m_num.start()] # 去掉数字，只留名字
+            val_str = val_str[:m_num.start()] 
             
-        # 核心拆分法则 1：认准“高、初、小”
-        match = re.match(r'^(.*?)(高[一二三]|初[一二三]|小[一二三四五六])(.*)$', val_str)
+        match = re.match(r'^([\u4e00-\u9fa5a-zA-Z]+?)(高[一二三]|初[一二三]|小[一二三四五六])(.*)$', val_str)
         if match:
             return {'教师姓名': match.group(1), '课程类别': match.group(2) + match.group(3), '课时数': count}
             
-        # 核心拆分法则 2：强制匹配常用课名
         known_types = ['早自', '正大', '正小', '晚自', '自大', '自小', '辅导', '正课', '早读', '晚修']
         for kt in known_types:
             if val_str.endswith(kt):
                 return {'教师姓名': val_str[:-len(kt)], '课程类别': kt, '课时数': count}
                 
-        # 最后的兜底：如果完全无法识别，将整个名字记下来，归类为“其他课”
         if len(val_str) >= 2:
             return {'教师姓名': val_str, '课程类别': '常规课', '课时数': count}
         return None
 
     # ================= 7. 双模式统计区 =================
     st.markdown("---")
-    tab1, tab2 = st.tabs(["📏 精准双重过滤统计 (锁定范围 + 自由日历)", "📊 常规清单表统计 (手动选列)"])
+    tab1, tab2 = st.tabs(["📏 【周课表专用】垂直穿插统计", "📊 【常规明细表】手动选列统计"])
     
     with tab1:
-        st.info("💡 请先锁定排课表横向段，然后您可以通过日历自由设定时间（日历不再限制日期）。")
+        st.info("💡 系统专为垂直多周连排的周课表设计：锁定星期一到星期日的列段后，自由选择需要统计的日期区间。")
         all_cols = display_df.columns.tolist()
-        
-        # 极其贴心：为下拉菜单里的列名拼上日期（如果找得到的话）
-        display_options = []
-        for col in all_cols:
-            date_info = ""
-            for i in range(min(4, len(display_df))):
-                val = str(display_df[col].iloc[i]).strip()
-                m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val)
-                if m: date_info = m.group(1); break
-            display_options.append(f"{col} 📅 {date_info}" if date_info else col)
 
         # 1. 结构锁定
+        st.markdown("##### 第一步：锁定列区域 (建议选择：未命名_15 到 未命名_21)")
         col_a, col_b = st.columns(2)
         with col_a:
             default_start = 14 if len(all_cols) > 14 else 0
-            start_choice = st.selectbox("🚩 第一步：选择【起始】列", options=display_options, index=default_start)
+            start_choice = st.selectbox("🚩 起始列 (星期一)", options=all_cols, index=default_start)
         with col_b:
             default_end = 20 if len(all_cols) > 20 else len(all_cols) - 1
-            end_choice = st.selectbox("🏁 第二步：选择【结束】列", options=display_options, index=default_end)
+            end_choice = st.selectbox("🏁 结束列 (星期日)", options=all_cols, index=default_end)
             
-        start_idx, end_idx = display_options.index(start_choice), display_options.index(end_choice)
+        start_idx, end_idx = all_cols.index(start_choice), all_cols.index(end_choice)
         
         if start_idx > end_idx:
             st.error("⚠️ 起始列不能在结束列的后面！")
         else:
             locked_cols = all_cols[start_idx : end_idx + 1]
             
-            # 拿到锁定区域内含有的日期
-            col_dates = {}
+            # 【黑科技核心】：垂直扫描提取所有日期
+            all_dates_in_range = set()
             for col in locked_cols:
-                for i in range(min(3, len(display_df))):
-                    val = str(display_df[col].iloc[i]).strip()
-                    match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val)
-                    if match:
+                for val in display_df[col]:
+                    val_str = str(val).strip()
+                    m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val_str)
+                    if m:
                         try:
-                            col_dates[col] = pd.to_datetime(match.group(1)).date()
-                            break
+                            all_dates_in_range.add(pd.to_datetime(m.group(1)).date())
                         except: pass
             
-            # 2. 自由日历（去掉了强制封印）
-            if col_dates:
-                st.markdown("##### 🗓️ 第三步：设定需要统计的时间")
-                min_d, max_d = min(col_dates.values()), max(col_dates.values())
+            # 2. 自由日历筛选
+            if all_dates_in_range:
+                st.markdown("##### 第二步：选择统计时间")
+                min_d, max_d = min(all_dates_in_range), max(all_dates_in_range)
                 
-                # 解除了 min_value 和 max_value 的限制，让你自由选择
-                date_range = st.date_input("选择时间范围（系统默认选中本段全部时间）", [min_d, max_d])
+                date_range = st.date_input(f"🗓️ 该区域共扫描到 {len(all_dates_in_range)} 天的数据，请划定提取区间：", [min_d, max_d])
                 
                 if len(date_range) >= 1:
                     filter_start = date_range[0]
                     filter_end = date_range[1] if len(date_range) == 2 else date_range[0]
                     
-                    final_target_cols = [c for c, d in col_dates.items() if filter_start <= d <= filter_end]
-                    
-                    if not final_target_cols:
-                        st.warning("⚠️ 在你选择的时间范围内，指定的列中没有排课数据哦。")
-                    else:
-                        st.success(f"✅ 将对以下日期的列进行统计：**{', '.join([str(col_dates[c]) for c in final_target_cols])}**")
+                    if st.button("🚀 开始垂直扫描提取", type="primary"):
+                        records = []
                         
-                        if st.button("🚀 极速拆分并生成统计报表", type="primary"):
-                            records = []
-                            for col in final_target_cols:
-                                for val in display_df[col]:
-                                    parsed = parse_class_string(val)
+                        # 逐列往下扫描
+                        for col in locked_cols:
+                            current_date = None # 当前扫描到的日期状态
+                            
+                            for val in display_df[col]:
+                                val_str = str(val).strip()
+                                
+                                # 遇到日期，更新状态灯
+                                m = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', val_str)
+                                if m:
+                                    try:
+                                        current_date = pd.to_datetime(m.group(1)).date()
+                                    except: pass
+                                    continue # 已经是日期了，不用往下解析课时
+                                
+                                # 核心：如果当前日期在筛选范围内，且不是空行，就抓取！
+                                if current_date and (filter_start <= current_date <= filter_end):
+                                    parsed = parse_class_string(val_str)
                                     if parsed:
-                                        parsed['来源日期'] = str(col_dates[col]) # 记录一下是哪天的，方便排错
-                                        parsed['原始单元格'] = val
+                                        parsed['来源日期'] = str(current_date)
+                                        parsed['所在列'] = col
+                                        parsed['原始录入'] = val_str
                                         records.append(parsed)
                                         
-                            if records:
-                                stat_df = pd.DataFrame(records)
-                                pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
-                                pivot_df['总计'] = pivot_df.sum(axis=1)
-                                
-                                st.success(f"🎉 统计完毕！共计提取到 {stat_df['课时数'].sum()} 节课时。")
-                                st.dataframe(pivot_df, use_container_width=True)
-                                
-                                # 🔍 【新增防漏抓透视镜】：让你明白系统到底抓了什么
-                                with st.expander("🔍 觉得算得不准？点这里查看抓取明细 (Debug)"):
-                                    st.write("系统从你的 Excel 中拆解出了以下记录，如有遗漏说明你的 Excel 拼写不符合规则：")
-                                    st.dataframe(stat_df)
-                            else:
-                                st.warning("没有找到可以统计的课时数据。")
+                        if records:
+                            stat_df = pd.DataFrame(records)
+                            pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
+                            pivot_df['总计'] = pivot_df.sum(axis=1)
+                            
+                            st.success(f"🎉 统计完毕！共计提取到 {stat_df['课时数'].sum()} 节课时。")
+                            st.dataframe(pivot_df, use_container_width=True)
+                            
+                            with st.expander("🔍 点这里查看提取明细账单 (核对查错专用)"):
+                                st.dataframe(stat_df)
+                        else:
+                            st.warning("您选定的时间范围内没有找到可识别的课时。")
             else:
-                st.warning("⚠️ 在你锁定的列范围中，没有找到 YYYY-MM-DD 格式的日期。")
+                st.warning("⚠️ 在你锁定的列中，没有扫描到任何包含 YYYY-MM-DD 格式的日期！请确认区域选择正确。")
 
     # ---------------- TAB 2：常规下拉菜单统计逻辑 ----------------
     with tab2:
@@ -277,3 +270,6 @@ if st.session_state['all_sheets'] is not None:
                 st.dataframe(pivot_df, use_container_width=True)
             except:
                 st.warning("无法生成，请确认选对了列名哦！")
+
+else:
+    st.info("👆 请先在左侧上传您的 Excel 文件！")

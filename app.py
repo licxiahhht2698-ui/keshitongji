@@ -2,57 +2,63 @@ import streamlit as st
 import pandas as pd
 import io
 
-# ================= 1. 网页基础设置 & 五号字体样式 =================
+# ================= 1. 网页基础设置 & 紧凑小字体样式 =================
 st.set_page_config(page_title="教师课时管理系统", page_icon="📚", layout="wide")
 
-# 注入 CSS 魔法：设置按钮为五号字体(14px)，并模仿你截图中的浅绿色风格
+# 注入 CSS 魔法：设置更小的字体(12px)，更扁平紧凑的横向按钮
 st.markdown("""
 <style>
-    /* 控制按钮的样式：五号字体(14px)，浅绿色背景，棕色边框 */
+    /* 控制按钮的样式：12px字体，减小高度和边距 */
     div.stButton > button {
-        font-size: 14px !important; 
+        font-size: 12px !important; 
+        padding: 0px 5px !important;
+        min-height: 28px !important; 
+        height: 28px !important;
         width: 100%;
         background-color: #d8e4bc; 
         color: #333333;
         border: 1px solid #8e9e63;
-        padding: 5px 0px;
-        margin-bottom: 2px;
+        margin-top: 2px;
     }
     div.stButton > button:hover {
         background-color: #c4d79b;
         color: black;
         border-color: #4f6228;
     }
-    /* 控制列标题的样式 */
-    .dir-title {
-        text-align: center;
-        font-size: 16px;
+    /* 控制横排分类标题的样式 */
+    .row-title {
+        font-size: 13px;
         font-weight: bold;
         color: #604a0e;
-        margin-bottom: 10px;
+        text-align: right;
+        padding-top: 8px;
+        padding-right: 10px;
+    }
+    /* 缩小列与列之间的间距 */
+    [data-testid="column"] {
+        padding: 0 4px !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("📚 教师课时智能管理平台")
 
-# 初始化网页的记忆（当前选中的工作表）
+# 初始化网页的记忆
 if 'all_sheets' not in st.session_state:
     st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state:
-    st.session_state['current_sheet'] = "汇总表" # 默认打开的表
+    st.session_state['current_sheet'] = "汇总表"
 
 # ================= 2. 侧边栏与文件上传 =================
 st.sidebar.header("📁 数据中心")
-uploaded_file = st.sidebar.file_uploader("首次使用，请先上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
-    with st.spinner('正在疯狂解析您的 Excel 结构...'):
+    with st.spinner('正在读取您的 Excel 数据...'):
         st.session_state['all_sheets'] = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
         st.sidebar.success("✅ 文件读取成功！")
 
-# ================= 3. 顶部导航目录 (你的截图结构) =================
-# 用一个字典把你的目录结构存起来
+# ================= 3. 顶部导航 (纯横排模式) =================
 directory_data = {
     "总表": ["汇总表", "分表"],
     "高一年级": [f"高一{i}班" for i in range(1, 9)],
@@ -61,55 +67,55 @@ directory_data = {
     "一对一": ["一对一", "一对一档案"]
 }
 
-# 在网页顶部划出 5 个等宽的列
-cols = st.columns(5)
+st.write("---") # 顶部顶部分割线
 
-# 自动生成这 5 列的按钮
-for i, (category, buttons) in enumerate(directory_data.items()):
-    with cols[i]:
-        # 写入大标题（比如：高一年级）
-        st.markdown(f'<div class="dir-title">{category}</div>', unsafe_allow_html=True)
-        # 生成这一列下面的所有按钮
-        for btn_name in buttons:
-            if st.button(btn_name):
-                # 如果按钮被点击，就让网页记住当前要看哪个表
+# 按行（横排）生成目录
+for category, buttons in directory_data.items():
+    # 动态分配列：第1列用来放名字(占1.2份宽度)，后面的列用来放按钮(各占1份宽度)
+    cols = st.columns([1.2] + [1] * len(buttons) + [0.1] * (8 - len(buttons))) 
+    
+    with cols[0]:
+        # 这一行的标题（靠右对齐）
+        st.markdown(f'<div class="row-title">{category} :</div>', unsafe_allow_html=True)
+        
+    for i, btn_name in enumerate(buttons):
+        with cols[i+1]:
+            # 生成紧凑的小按钮
+            if st.button(btn_name, key=btn_name):
                 st.session_state['current_sheet'] = btn_name
 
+st.write("---") # 底部分割线
 
-st.divider() # 画一条分割线
-
-# ================= 4. 核心编辑区 (点击上方按钮后联动) =================
+# ================= 4. 核心编辑区 =================
 if st.session_state['all_sheets'] is not None:
     
     current = st.session_state['current_sheet']
-    st.subheader(f"✏️ 正在编辑: 【{current}】")
+    st.markdown(f"#### ✏️ 当前编辑 : 【 {current} 】")
     
-    # 检查你点击的班级，在你的 Excel 里到底存不存在这个 Sheet
     if current in st.session_state['all_sheets']:
         df_current = st.session_state['all_sheets'][current]
         
-        # 生成可编辑的表格
+        # 呈现可编辑表格
         edited_df = st.data_editor(
             df_current, 
             num_rows="dynamic",
             use_container_width=True,
-            height=600
+            height=550
         )
-        # 实时保存修改
         st.session_state['all_sheets'][current] = edited_df
         
     else:
-        st.warning(f"⚠️ 在您上传的 Excel 文件中，没有找到名为 '{current}' 的工作表哦！请检查 Excel 的底部标签名是否对应。")
+        st.warning(f"⚠️ 在上传的 Excel 中没有找到 '{current}' 工作表。")
 
     # ---------------- 下载最新数据 ----------------
     st.sidebar.divider()
-    st.sidebar.subheader("💾 导出数据")
+    st.sidebar.subheader("💾 保存与下载")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for sheet_name, df in st.session_state['all_sheets'].items():
             df.to_excel(writer, sheet_name=sheet_name, index=False)
     processed_data = output.getvalue()
-    st.sidebar.download_button("⬇️ 下载修改后的 Excel", data=processed_data, file_name="最新课时统计.xlsx")
+    st.sidebar.download_button("⬇️ 下载最新版 Excel", data=processed_data, file_name="最新课时统计.xlsx")
 
 else:
-    st.info("👆 请先在左侧上传包含这些班级数据的 Excel 文件哦！")
+    st.info("👆 请先在左侧上传您的 Excel 文件，随后即可点击上方横排按钮切换班级！")

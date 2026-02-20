@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import io
+import re
 
 # ================= 1. 网页基础设置 =================
 st.set_page_config(page_title="教师课时管理系统", page_icon="📚", layout="wide")
@@ -36,14 +36,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 教师课时智能管理平台")
+st.title("📚 教师排课表智能读取与统计系统")
 
 if 'all_sheets' not in st.session_state:
     st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state:
     st.session_state['current_sheet'] = None
 
-# ================= 2. 终极防御数据清洗引擎 =================
+# ================= 2. 数据清洗引擎 =================
 def clean_excel_data(df):
     header_idx = -1
     for i in range(min(10, len(df))):
@@ -79,24 +79,25 @@ def clean_excel_data(df):
     df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
     return df
 
-# ================= 3. 侧边栏与文件上传 =================
+# ================= 3. 文件上传 =================
 st.sidebar.header("📁 数据中心")
+st.sidebar.info("📌 当前版本为只读模式，所有数据均从 Excel 中提取，不会修改原文件。")
 uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
     try:
-        with st.spinner('正在执行终极防崩溃算法解析，请稍候...'):
+        with st.spinner('正在解析并提取课表...'):
             raw_sheets = pd.read_excel(uploaded_file, sheet_name=None, engine='openpyxl')
             clean_sheets = {}
             for sheet_name, df in raw_sheets.items():
                 clean_sheets[sheet_name] = clean_excel_data(df)
             st.session_state['all_sheets'] = clean_sheets
             st.session_state['current_sheet'] = list(clean_sheets.keys())[0]
-            st.sidebar.success("✅ 文件清洗并加载成功！")
+            st.sidebar.success("✅ 文件解析成功！")
     except Exception as e:
         st.error(f"严重错误: {e}")
 
-# ================= 4. 动态顶部导航 =================
+# ================= 4. 动态导航 =================
 if st.session_state['all_sheets'] is not None:
     all_sheet_names = list(st.session_state['all_sheets'].keys())
     directory_data = {
@@ -124,86 +125,114 @@ if st.session_state['all_sheets'] is not None:
                     st.session_state['current_sheet'] = btn_name
     st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
 
-    # ================= 5. 核心编辑区 =================
+    # ================= 5. 只读展示区 =================
     current = st.session_state['current_sheet']
-    st.markdown(f"#### ✏️ 当前编辑 : 【 {current} 】")
-    df_current = st.session_state['all_sheets'][current]
+    st.markdown(f"#### 👁️ 当前查看 : 【 {current} 】")
     
-    try:
-        edited_df = st.data_editor(
-            df_current, 
-            num_rows="dynamic",
-            use_container_width=True,
-            height=400,
-            key=f"editor_{current}"
-        )
-        st.session_state['all_sheets'][current] = edited_df
-    except Exception as e:
-        st.error(f"渲染失败。错误详情: {e}")
+    df_current = st.session_state['all_sheets'][current].copy()
+    
+    # 【核心格式化】：把所有的 00:00:00 去掉，把 nan 变为空白
+    df_current = df_current.astype(str)
+    df_current = df_current.replace({' 00:00:00': ''}, regex=True)
+    df_current = df_current.replace({'nan': ''})
+    
+    # 彻底改为只读模式 st.dataframe，不再使用编辑器
+    st.dataframe(df_current, use_container_width=True, height=350)
 
-    # ================= 6. 智能统计区 (新增了用户自选功能！) =================
+    # ================= 6. 带时间范围的智能统计区 =================
     st.markdown("---")
-    st.markdown(f"#### 📊 【{current}】各教师课时自动统计")
     
-    available_cols = list(edited_df.columns)
-    
-    if len(available_cols) > 0:
-        # 智能猜一下哪几列是我们要的
+    # 步骤 1：自动检测第一行里是不是包含日期 (寻找 2025-12-01 这种格式)
+    date_cols = {}
+    if len(df_current) > 0:
+        for col in df_current.columns:
+            val_str = str(df_current.loc[0, col]).strip()
+            # 如果符合 YYYY-MM-DD 格式，就记录下来它对应的列名
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', val_str):
+                date_cols[val_str] = col
+
+    # 如果检测到了日期列（这就是你截图里的横向排课表）
+    if date_cols:
+        st.markdown(f"#### 📅 【{current}】日期范围课时统计")
+        st.success("✨ 系统检测到当前为排课表，已开启按日期范围自动提取统计功能！")
+        
+        dates = sorted(list(date_cols.keys()))
+        min_date = pd.to_datetime(dates[0]).date()
+        max_date = pd.to_datetime(dates[-1]).date()
+
+        # 生成日期范围选择器
+        selected_dates = st.date_input("🗓️ 请选择要统计的日期范围：", [min_date, max_date], min_value=min_date, max_value=max_date)
+
+        if len(selected_dates) == 2:
+            start_date, end_date = selected_dates
+            
+            # 找到在所选时间范围内的真实列名 (如 未命名_15, 未命名_16)
+            valid_cols = []
+            for d_str, c_name in date_cols.items():
+                if start_date <= pd.to_datetime(d_str).date() <= end_date:
+                    valid_cols.append(c_name)
+
+            # 从第 3 行开始（跳过日期行和星期行），提取所有排课数据
+            all_classes = []
+            for col in valid_cols:
+                if len(df_current) > 2:
+                    cells = df_current[col].iloc[2:].dropna().astype(str).tolist()
+                    all_classes.extend(cells)
+
+            # 过滤垃圾词汇，并拆分姓名和课程类型
+            records = []
+            ignore_words = ['0', '0.0', '', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日', '体育', '班会', '国学', '美术', '音乐']
+            
+            for item in all_classes:
+                item = item.strip()
+                if not item or item in ignore_words: 
+                    continue
+                
+                # 【智能拆词】：寻找 "高一", "高二", "高三" 的位置，左边是名字，右边是班级和类型
+                idx = max(item.rfind("高一"), item.rfind("高二"), item.rfind("高三"))
+                if idx != -1:
+                    name = item[:idx]
+                    type_str = item[idx:]
+                    records.append({'教师姓名': name, '课程类别': type_str, '课时数': 1})
+                else:
+                    # 如果找不到“高”，尝试直接看最后两三个字（如 "早自"）
+                    records.append({'教师姓名': item, '课程类别': '其他课时', '课时数': 1})
+
+            if records:
+                # 生成漂亮的透视统计表
+                stat_df = pd.DataFrame(records)
+                pivot_df = pd.pivot_table(stat_df, values='课时数', index='教师姓名', columns='课程类别', aggfunc='sum', fill_value=0)
+                pivot_df['总计'] = pivot_df.sum(axis=1)
+                st.dataframe(pivot_df, use_container_width=True)
+            else:
+                st.info("💡 在您选择的日期范围内，没有找到有效的教师排课记录哦。")
+
+    # 如果不是横向排课表（比如汇总表），走老规矩下拉菜单逻辑
+    else:
+        st.markdown(f"#### 📊 【{current}】常规课时自动统计")
+        available_cols = list(df_current.columns)
+        
         def guess_index(keywords):
             for i, col in enumerate(available_cols):
-                if any(k in str(col) for k in keywords):
-                    return i
+                if any(k in str(col) for k in keywords): return i
             return 0
             
-        idx_name = guess_index(['姓名', '教师', '老师'])
-        idx_type = guess_index(['子类', '类别', '科目'])
-        idx_count = guess_index(['课数', '课时', '节数'])
-        
-        # 💡 在网页上生成三个下拉菜单！
-        st.info("💡 如果下方的统计没出来，或者统计错了，请在这里手动选择对应的列：")
         col1, col2, col3 = st.columns(3)
-        with col1:
-            name_col = st.selectbox("👤 哪一列是【教师姓名】？", available_cols, index=idx_name, key=f"sel_name_{current}")
-        with col2:
-            type_col = st.selectbox("🏷️ 哪一列是【课时类别/早自晚自】？", available_cols, index=idx_type, key=f"sel_type_{current}")
-        with col3:
-            count_col = st.selectbox("🔢 哪一列是【课时数量】？", available_cols, index=idx_count, key=f"sel_count_{current}")
+        with col1: name_col = st.selectbox("👤 【教师姓名】列", available_cols, index=guess_index(['姓名', '教师']))
+        with col2: type_col = st.selectbox("🏷️ 【类别】列", available_cols, index=guess_index(['子类', '类别', '科目']))
+        with col3: count_col = st.selectbox("🔢 【数量】列", available_cols, index=guess_index(['课数', '课时', '节数']))
             
         try:
-            # 根据你选择的列来进行计算
-            stat_df = edited_df.copy()
+            stat_df = df_current.copy()
             stat_df[count_col] = pd.to_numeric(stat_df[count_col], errors='coerce').fillna(0)
-            
-            # 过滤掉一些没用的空行，让统计表更干净
             stat_df = stat_df[stat_df[name_col].notna()]
             stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '']
-            stat_df = stat_df[stat_df[name_col].astype(str).str.strip() != '0']
             
-            # 生成透视表
-            pivot_df = pd.pivot_table(
-                stat_df, 
-                values=count_col, 
-                index=name_col, 
-                columns=type_col, 
-                aggfunc='sum', 
-                fill_value=0
-            )
-            
+            pivot_df = pd.pivot_table(stat_df, values=count_col, index=name_col, columns=type_col, aggfunc='sum', fill_value=0)
             pivot_df['总计'] = pivot_df.sum(axis=1)
             st.dataframe(pivot_df, use_container_width=True)
-            
-        except Exception as e:
-            st.warning(f"无法生成统计表，请确保选择的列正确哦。({e})")
+        except:
+            st.warning("请确保选择了正确的列。")
 
-    # ---------------- 下载最新数据 ----------------
-    st.sidebar.divider()
-    st.sidebar.subheader("💾 保存与下载")
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            for sheet_name, df in st.session_state['all_sheets'].items():
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-        processed_data = output.getvalue()
-        st.sidebar.download_button("⬇️ 下载最新版 Excel", data=processed_data, file_name="最新课时统计_已清理.xlsx")
-    except Exception as e:
-        pass
+else:
+    st.info("👆 请先在左侧上传您的 Excel 文件！")

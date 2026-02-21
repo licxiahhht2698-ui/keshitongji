@@ -2,33 +2,113 @@ import streamlit as st
 import pandas as pd
 import io
 import re
-# 新增：强大的 Excel 样式控制库
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ================= 1. 网页基础设置 =================
+# ================= 1. 网页基础设置 & 究极 UI 美化 =================
 st.set_page_config(page_title="教师课时管理系统", page_icon="📚", layout="wide")
 
 st.markdown("""
 <style>
+    /* 1. 整体背景色微渐变，护眼且高级 */
+    .stApp {
+        background-color: #f4f7f6;
+        background-image: linear-gradient(120deg, #fdfbfb 0%, #ebedee 100%);
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    
+    /* 2. 极致压缩顶部空白，让标题置顶 */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 96% !important; 
+    }
+
+    /* 3. 重新设计高大上的居中主标题 */
+    .main-title {
+        font-size: 2.2rem;
+        font-weight: 800;
+        color: #1e3a8a; /* 商务深蓝 */
+        text-align: center;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid #cbd5e1;
+        letter-spacing: 2px;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.05);
+    }
+
+    /* 4. 侧边栏美化：纯白背景加浅浅的阴影，制造悬浮感 */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+        box-shadow: 2px 0 12px rgba(0,0,0,0.04);
+        border-right: 1px solid #e2e8f0;
+    }
+    
+    /* 5. 导航按钮美化：苹果风圆角胶囊按键，带悬浮动画 */
     div.stButton > button {
-        white-space: nowrap !important; font-size: 13px !important;     
-        padding: 2px 8px !important; min-height: 28px !important; 
-        height: 28px !important; width: 100% !important;         
-        background-color: #e2efda; color: #333333;
-        border: 1px solid #a9d08e; border-radius: 3px;
+        white-space: nowrap !important; 
+        font-size: 13px !important;     
+        padding: 4px 12px !important;    
+        min-height: 32px !important; 
+        height: 32px !important;
+        width: 100% !important;         
+        background-color: #ffffff;      
+        color: #4b5563;
+        border: 1px solid #d1d5db;
+        border-radius: 16px !important; /* 圆角胶囊 */
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        transition: all 0.2s ease-in-out; /* 悬浮动画 */
     }
-    div.stButton > button:hover { background-color: #c6e0b4; color: black; border-color: #548235; }
-    .row-title { font-size: 13px; font-weight: bold; color: #385723; text-align: left; padding-top: 5px; white-space: nowrap; }
-    [data-testid="column"] { padding: 0 4px !important; }
+    div.stButton > button:hover {
+        background-color: #f0f9ff;
+        color: #0284c7;
+        border-color: #7dd3fc;
+        transform: translateY(-2px); /* 鼠标移上去微微上浮 */
+        box-shadow: 0 4px 6px rgba(0,0,0,0.08);
+    }
+    
+    /* 6. 下载按钮的专属尊贵渐变色 */
     div[data-testid="stDownloadButton"] > button {
-        background-color: #ffe699 !important; border-color: #ffc000 !important; font-weight: bold;
+        background: linear-gradient(to right, #fbbf24, #f59e0b) !important;
+        color: white !important;
+        border: none !important;
+        font-weight: bold;
+        letter-spacing: 1px;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 6px rgba(245, 158, 11, 0.2) !important;
     }
-    div[data-testid="stDownloadButton"] > button:hover { background-color: #ffd966 !important; }
+    div[data-testid="stDownloadButton"] > button:hover {
+        background: linear-gradient(to right, #f59e0b, #d97706) !important;
+        transform: translateY(-2px);
+    }
+
+    /* 7. 行标题（分类名）右对齐，与胶囊按钮对齐 */
+    .row-title {
+        font-size: 14px;
+        font-weight: bold;
+        color: #475569;
+        text-align: right;               
+        padding-top: 6px;
+        padding-right: 12px;
+        white-space: nowrap;
+    }
+    
+    /* 8. 缩小列间距 */
+    [data-testid="column"] { padding: 0 5px !important; }
+    
+    /* 9. 让数据表格变得像白纸一样干净立体 */
+    [data-testid="stDataFrame"] {
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        border: 1px solid #e5e7eb;
+        background-color: #ffffff;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 教师排课智能读取与精准统计系统")
+# 使用 HTML 注入主标题，替代原本默认自带大片空白的 st.title
+st.markdown('<div class="main-title">📚 教师排课智能读取与精准统计系统</div>', unsafe_allow_html=True)
 
 if 'all_sheets' not in st.session_state: st.session_state['all_sheets'] = None
 if 'current_sheet' not in st.session_state: st.session_state['current_sheet'] = None
@@ -36,35 +116,26 @@ if 'global_mode' not in st.session_state: st.session_state['global_mode'] = Fals
 
 # ================= 新增核心：汇报级 Excel 渲染引擎 =================
 def convert_df_to_excel_pro(df, sheet_name, title):
-    """将数据转化为带专业边框、颜色、自适应列宽的领导汇报级表格"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 重置索引，让“教师姓名”变成普通列，方便一起加样式
         export_df = df.reset_index()
-        # 从第3行开始写数据（索引不要了，因为已经重置出来了）
         export_df.to_excel(writer, sheet_name=sheet_name, startrow=2, index=False)
         worksheet = writer.sheets[sheet_name]
         
-        # --- 准备样式 ---
-        # 细实线边框
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
-                             top=Side(style='thin'), bottom=Side(style='thin'))
-        # 商务蓝表头底色
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
         header_font = Font(color="FFFFFF", bold=True, size=11)
         center_align = Alignment(horizontal='center', vertical='center')
         
         max_col = len(export_df.columns)
-        max_row = len(export_df) + 3 # 2行标题 + 1行表头 + 数据
+        max_row = len(export_df) + 3 
         
-        # --- 1. 渲染大标题 ---
         cell = worksheet.cell(row=1, column=1, value=title)
         cell.font = Font(size=18, bold=True, color="000000")
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
         cell.alignment = center_align
-        worksheet.row_dimensions[1].height = 40 # 标题行加高
+        worksheet.row_dimensions[1].height = 40 
         
-        # --- 2. 渲染表头 (第3行) ---
         worksheet.row_dimensions[3].height = 25
         for col_idx in range(1, max_col + 1):
             c = worksheet.cell(row=3, column=col_idx)
@@ -73,20 +144,16 @@ def convert_df_to_excel_pro(df, sheet_name, title):
             c.alignment = center_align
             c.border = thin_border
             
-        # --- 3. 渲染数据区和调整列宽 ---
         for r_idx in range(4, max_row + 1):
-            worksheet.row_dimensions[r_idx].height = 20 # 舒适的数据行高
+            worksheet.row_dimensions[r_idx].height = 20 
             for c_idx in range(1, max_col + 1):
                 c = worksheet.cell(row=r_idx, column=c_idx)
                 c.alignment = center_align
                 c.border = thin_border
-                # 给第一列（教师姓名）加粗
-                if c_idx == 1:
-                    c.font = Font(bold=True)
+                if c_idx == 1: c.font = Font(bold=True)
                     
-        # --- 4. 智能调整列宽 ---
         for i in range(1, max_col + 1):
-            worksheet.column_dimensions[get_column_letter(i)].width = 14 # 统一加宽，防止拥挤
+            worksheet.column_dimensions[get_column_letter(i)].width = 14 
 
     return output.getvalue()
 
@@ -156,7 +223,7 @@ def parse_class_string(val_str):
 
 # ================= 3. 侧边栏与全局汇总配置 =================
 st.sidebar.header("📁 数据中心")
-uploaded_file = st.sidebar.file_uploader("请上传您的 xlsm/xlsx 文件", type=["xlsm", "xlsx"])
+uploaded_file = st.sidebar.file_uploader("请拖拽或点击上传 Excel (.xlsm/xlsx)", type=["xlsm", "xlsx"])
 
 if uploaded_file is not None and st.session_state['all_sheets'] is None:
     try:
@@ -170,14 +237,11 @@ if uploaded_file is not None and st.session_state['all_sheets'] is None:
     except Exception as e:
         st.error(f"严重错误: {e}")
 
-# 【新增核心功能】：侧边栏全向导式多选汇总
 if st.session_state['all_sheets'] is not None:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🌐 全局统计生成器")
     
-    # 获取真正的排课班级名单（过滤掉没用的总表）
     valid_classes = [s for s in st.session_state['all_sheets'].keys() if not any(kw in s for kw in ['总表', '分表', '汇总'])]
-    
     scope = st.sidebar.radio("📌 统计范围选择", ["所有班级 (全校)", "按年级多选", "自定义勾选班级"])
     
     target_classes = []
@@ -191,8 +255,8 @@ if st.session_state['all_sheets'] is not None:
 
     st.sidebar.markdown("##### 📍 数据截取设置")
     col_g1, col_g2 = st.sidebar.columns(2)
-    with col_g1: g_start_idx = st.number_input("起始列数字", min_value=1, value=15)
-    with col_g2: g_end_idx = st.number_input("结束列数字", min_value=1, value=21)
+    with col_g1: g_start_idx = st.number_input("起始列数", min_value=1, value=15)
+    with col_g2: g_end_idx = st.number_input("结束列数", min_value=1, value=21)
     
     g_dates = st.sidebar.date_input("🗓️ 限定统计时间段", [])
     
@@ -224,7 +288,8 @@ if st.session_state['all_sheets'] is not None:
         elif "一对一" in name: directory_data["一对一"].append(name)
         else: directory_data["其他表单"].append(name)
 
-    st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
+    # 导航栏顶部不再需要粗分割线，用微间距代替
+    st.write("")
     for category, buttons in directory_data.items():
         if not buttons: continue 
         empty_space = 10 - len(buttons) if len(buttons) < 10 else 1
@@ -236,7 +301,7 @@ if st.session_state['all_sheets'] is not None:
                 if st.button(btn_name, key=f"nav_{btn_name}"):
                     st.session_state['current_sheet'] = btn_name
                     st.session_state['global_mode'] = False 
-    st.markdown("<hr style='margin: 5px 0px;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin: 15px 0px; border: none; border-top: 1px dashed #cbd5e1;'>", unsafe_allow_html=True)
 
     # ================= 5. 分支判断：全局表 or 单班级表 =================
     if st.session_state['global_mode']:
@@ -245,7 +310,6 @@ if st.session_state['all_sheets'] is not None:
         f_end = g_dates[1] if len(g_dates) == 2 else g_dates[0]
         targets = st.session_state['g_targets']
         
-        # 智能动态标题
         report_title_prefix = "全校" if st.session_state['g_scope'] == "所有班级 (全校)" else "选中班级"
         
         st.markdown(f"### 🌐 【{report_title_prefix}】课时总汇 📅 ({f_start} 至 {f_end})")
@@ -286,10 +350,10 @@ if st.session_state['all_sheets'] is not None:
             st.success(f"🎉 统计完毕！共 {len(stat_df['教师姓名'].unique())} 位老师上了课，总计 {stat_df['课时数'].sum()} 节。")
             st.dataframe(pivot_df, use_container_width=True)
             
-            formal_title = f"【{report_title_prefix}汇总】课时报表 ({f_start}至{f_end})"
+            formal_title = f"【{report_title_prefix}汇总】课时报表 ({f_start} 至 {f_end})"
             excel_data = convert_df_to_excel_pro(pivot_df, sheet_name="数据汇总", title=formal_title)
             st.download_button(
-                label=f"⬇️ 导出《{report_title_prefix}汇报表格》为 Excel",
+                label=f"⬇️ 导出带商务排版的《{report_title_prefix}汇报表格》",
                 data=excel_data, file_name=f"{report_title_prefix}课时报表_{f_start}至{f_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
@@ -298,7 +362,6 @@ if st.session_state['all_sheets'] is not None:
             st.warning("⚠️ 在指定的范围中，未抓取到有效课时！")
             
     else:
-        # ---------------- 单一班级视图 ----------------
         current = st.session_state['current_sheet']
         st.markdown(f"#### 👁️ 当前查看 : 【 {current} 】")
         
@@ -358,11 +421,10 @@ if st.session_state['all_sheets'] is not None:
                                 st.success(f"🎉 统计完毕！【{current}】共计 {stat_df['课时数'].sum()} 节课时。")
                                 st.dataframe(pivot_df, use_container_width=True)
                                 
-                                # 【全新高大上排版导出】
-                                formal_title = f"【{current}】课时统计报表 ({f_start}至{f_end})"
+                                formal_title = f"【{current}】课时统计报表 ({f_start} 至 {f_end})"
                                 excel_data = convert_df_to_excel_pro(pivot_df, sheet_name=current, title=formal_title)
                                 st.download_button(
-                                    label=f"⬇️ 导出带商务排版的《{current}报表》为 Excel",
+                                    label=f"⬇️ 导出带高级排版的《{current}报表》",
                                     data=excel_data, file_name=f"{current}_课时报表_{f_start}至{f_end}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
@@ -397,7 +459,7 @@ if st.session_state['all_sheets'] is not None:
                     formal_title = f"【{current}】常规课时统计"
                     excel_data = convert_df_to_excel_pro(pivot_df, sheet_name=current, title=formal_title)
                     st.download_button(
-                        label="⬇️ 导出带商务排版的报表", data=excel_data, file_name=f"{current}_常规课时.xlsx",
+                        label="⬇️ 导出带高级排版的报表", data=excel_data, file_name=f"{current}_常规课时.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 except:
